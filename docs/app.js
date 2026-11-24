@@ -20,7 +20,7 @@
   // ---------- 状態 ----------
   const S = {
     data: { v: 1, assets: {}, entries: [], updatedAt: null },
-    settings: { owner: '', repo: 'asset-app-data', token: '', pass: '' },
+    settings: { owner: 'fugangliang', repo: 'asset-app-data', token: '', pass: '' },
     prices: {}, status: null, index: null,
     range: '1Y', allocBy: 'account', form: null, busy: false, lastError: null,
   };
