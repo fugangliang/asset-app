@@ -2,7 +2,7 @@
 (function () {
   'use strict';
   const L = self.Logic, Sync = self.Sync, Chart = self.Chart;
-  const VERSION = '1.0.0';
+  const VERSION = '1.0.1';
   const K_DATA = 'asset-app:data', K_SET = 'asset-app:settings';
   const ACCOUNTS = [
     { id: 'nisa_t', label: 'NISA つみたて投資枠' }, { id: 'nisa_g', label: 'NISA 成長投資枠' },
@@ -456,7 +456,7 @@
       <div class="card"><h2>GitHub接続（時価の取得元）</h2>
         <label class="f"><span>ユーザー名（owner）</span><input data-s="owner" type="text" value="${esc(s.owner)}" autocapitalize="off" autocomplete="off"></label>
         <label class="f"><span>データリポジトリ名</span><input data-s="repo" type="text" value="${esc(s.repo)}" autocapitalize="off" autocomplete="off"></label>
-        <label class="f"><span>アクセストークン</span><input data-s="token" type="password" value="${esc(s.token)}" autocomplete="off"><span class="hint">Fine-grained token（対象=データリポジトリのみ・Contents: Read and write）。この端末内にのみ保存します。</span></label>
+        <label class="f"><span>アクセストークン</span><input data-s="token" type="password" value="${esc(s.token)}" autocomplete="off"><span class="hint">Fine-grained token（対象=データリポジトリのみ・Contents: Read and write）。この端末内にのみ保存します。<br><a class="link" style="font-size:12px" target="_blank" rel="noopener" href="https://github.com/settings/personal-access-tokens/new?name=asset-app-iphone&description=asset-app+price+data&expires_in=365&contents=write">GitHubでトークンを作成（入力済みの画面を開く）›</a><br>開いた画面で Repository access を「Only select repositories」→ データリポジトリ1つだけ選び、Contents が Read and write であることを確認して Generate token。</span></label>
         <label class="f"><span>バックアップ用パスフレーズ（任意・推奨）</span><input data-s="pass" type="password" value="${esc(s.pass)}" autocomplete="off"><span class="hint">設定すると、入力データを暗号化（AES-256-GCM）してデータリポジトリへ自動バックアップします。忘れると復元できません。</span></label>
         <button class="btn" data-act="save-settings">保存して接続テスト</button>
       </div>
