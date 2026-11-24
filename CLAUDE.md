@@ -39,3 +39,4 @@ iPhoneで使う個人資産管理PWA。銘柄・購入（日付/数量/単価）
 ## 進捗（確定事項ログ）
 
 - 2026-11-24: v1.0.0 作成。RF裁定=cfo-app廃止・置換／時価はGitHub Actions／対象は投信＋米国株／銘柄一覧は非公開。ロジックテスト14件通過、デモデータで全画面を確認。
+- 2026-11-24: 公開（RF承認「コードのみの配信はOK」）。本体=github `fugangliang/asset-app`（public）・配信=https://fugangliang.github.io/asset-app/ 。データ=`fugangliang/asset-app-data`（private）。Actions初回実行で投信・米国株（Nasdaq）・為替とも取得成功を確認（ghに workflow スコープ追加済み）。RF残作業=iPhoneでFine-grained PAT作成→設定画面に登録→ホーム画面に追加。`[要確認]` iPhone実機での動作（入力・チャートのタッチ操作・バックアップ）。
