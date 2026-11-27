@@ -12,7 +12,7 @@ iPhoneで使う個人資産管理PWA。銘柄・購入（日付/数量/単価）
 
 - 入力データ（数量・金額）はiPhone内 localStorage のみ。パスフレーズ設定時のみ AES-256-GCM で暗号化して data repo にバックアップ。
 - 時価は data repo の GitHub Actions が1日3回（JST 7:30/21:30/23:30）＋ `watchlist.json` 変更時に取得。iPhoneは Fine-grained PAT（Contents RW・data repoのみ）で読む。
-- 取得元: 投信=投資信託協会CSV（設定来）、米国株=Nasdaq API（過去約10年・失敗時Yahoo）、為替=Frankfurter（ECB参照レート）。すべて終値。
+- 取得元: 投信=投資信託協会CSV（設定来）、米国株=Nasdaq API（過去約10年・失敗時Yahoo）、暗号資産=Coinbase Exchange公開API（米ドル建て日足・銘柄は `BTC-USD` 形式・差分取得）、為替=Frankfurter（ECB参照レート）。すべて終値。CryptoCompare・CoinGeckoはAPIキー必須／1年分のみで不採用。
 
 ## 絶対規則
 
@@ -42,3 +42,5 @@ iPhoneで使う個人資産管理PWA。銘柄・購入（日付/数量/単価）
 - 2026-11-24: 公開（RF承認「コードのみの配信はOK」）。本体=github `fugangliang/asset-app`（public）・配信=https://fugangliang.github.io/asset-app/ 。データ=`fugangliang/asset-app-data`（private）。Actions初回実行で投信・米国株（Nasdaq）・為替とも取得成功を確認（ghに workflow スコープ追加済み）。RF残作業=iPhoneでFine-grained PAT作成→設定画面に登録→ホーム画面に追加。`[要確認]` iPhone実機での動作（入力・チャートのタッチ操作・バックアップ）。
 - 2026-11-24（続き）: v1.0.1＝設定画面にトークン作成リンク（入力済みURL）を追加・公開済み。RFがiPhoneで初期設定（Fine-grained PAT登録・接続テスト・ホーム画面追加）を完了。銘柄の登録はこれから。
 - 繰越: ①RFが最初の銘柄を登録後、Actionsが新銘柄の価格を取得するか（watchlist.json の自動更新→push→取得）を実機で確認 `[要確認]` ②iPhone実機でのチャートのタッチ操作・バックアップ往復 `[要確認]` ③iDeCo既定値・株式分割・米国株10年超の手入力（上記「既知の制約」）④ローカルの `asset-app-data` はアプリ/Actionsがリモートを更新するため、作業前に `git pull` すること。
+- 2026-11-28: v1.1.0（RF指示3点）。①iDeCoの含む/除く切替（ダッシュボードの集計・チャート・構成・保有一覧のみ。銘柄詳細は常に全口座）②暗号資産の入力（type=`crypto`・口座「暗号資産」・入力は数量＋円の購入金額〔空欄=当日終値×為替〕・評価は米ドル価格×ECB為替）③ドル建て損益（円/ドル切替。元本=各購入日の為替、評価額=直近の為替で換算。`logic.js` の `ctx.cur`・イベントの `costUsd`）。表示設定は localStorage `asset-app:prefs`。テスト19件。
+- `[要確認]` 暗号資産の円評価は「Coinbaseのドル価格×ECB参照レート」のため国内取引所の円建て価格と小幅にずれる／価格更新は1日3回（リアルタイムではない）／Coinbaseに米ドル建ての取扱いがない銘柄（BNB等）は取得不可。

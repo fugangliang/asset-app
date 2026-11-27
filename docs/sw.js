@@ -1,5 +1,5 @@
 /* アプリ本体のみキャッシュ（価格・個人データは扱わない）。更新時は VERSION を上げる。 */
-const VERSION = '1.0.1';
+const VERSION = '1.1.0';
 const CACHE = 'asset-app-' + VERSION;
 const SHELL = ['./', 'index.html', 'style.css', 'logic.js', 'chart.js', 'sync.js', 'app.js',
   'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];

@@ -110,3 +110,44 @@ test('前日比: 直近2営業日の差', () => {
   const s = L.summarize(ctx, assets, ev);
   near(s.dayChange, 100); near(s.dayPct, 0.01);
 });
+
+// ---- v1.1.0: ドル建て表示・暗号資産 ----
+const assets2 = { F: { symbol: 'F', type: 'fund' }, U: { symbol: 'U', type: 'us' }, C: { symbol: 'C', type: 'crypto' } };
+test('ドル建て: 米国株は為替の影響を受けず株価の損益だけになる', () => {
+  const ctx = { cur: 'USD', prices: { U: { rows: [['2025-01-06', 100], ['2026-01-06', 120]] } }, fx: [['2025-01-06', 150], ['2026-01-06', 160]], today: '2026-01-06' };
+  const ev = L.expandLot(ctx, assets2.U, { id: 'a', symbol: 'U', account: 'x', date: '2025-01-06', qty: 10, price: 100, fx: 150 });
+  const s = L.summarize(ctx, assets2, ev);
+  near(s.cost, 1000); near(s.value, 1200); near(s.pnl, 200); near(s.irr, 0.2, 1e-3);
+});
+test('ドル建て: 投信は購入日の為替で元本、現在の為替で評価額を換算（円安なら目減り）', () => {
+  const ctx = { cur: 'USD', prices: { F: { rows: [['2025-01-06', 10000], ['2026-01-06', 10000]] } }, fx: [['2025-01-06', 100], ['2026-01-06', 125]], today: '2026-01-06' };
+  const ev = L.expandLot(ctx, assets2.F, { id: 'a', symbol: 'F', account: 'x', date: '2025-01-06', qty: 1000000, price: 10000 });
+  const s = L.summarize(ctx, assets2, ev);
+  near(s.cost, 10000); near(s.value, 8000); near(s.pct, -0.2);
+  const yen = L.summarize(Object.assign({}, ctx, { cur: 'JPY' }), assets2, ev);
+  near(yen.pnl, 0);
+});
+test('ドル建て: 積立と series も換算される', () => {
+  const rows = mkRows('2026-01-01', '2026-03-31', () => 10000);
+  const fx = mkRows('2026-01-01', '2026-03-31', () => 150);
+  const ctx = { cur: 'USD', prices: { F: { rows } }, fx, today: '2026-03-31' };
+  const ev = L.expandPlan(ctx, assets2.F, { id: 'p', symbol: 'F', account: 'x', amount: 15000, day: 5, start: '2026-01', lag: 0 });
+  const s = L.summarize(ctx, assets2, ev);
+  near(s.cost, 300); near(s.value, 300);
+  const se = L.series(ctx, assets2, ev);
+  near(se[se.length - 1].value, 300); near(se[se.length - 1].cost, 300);
+});
+test('暗号資産: 数量＋円の購入金額で確定、評価はドル価格×為替', () => {
+  const ctx = { prices: { C: { rows: [['2025-01-06', 50000], ['2026-01-04', 60000]] } }, fx: [['2025-01-06', 150], ['2026-01-02', 160]], today: '2026-01-04' };
+  const ev = L.expandLot(ctx, assets2.C, { id: 'a', symbol: 'C', account: 'x', date: '2025-01-06', qty: 0.1, amount: 800000 });
+  near(ev[0].cost, 800000); near(ev[0].units, 0.1); near(ev[0].costUsd, 800000 / 150); assert.equal(ev[0].est, false);
+  const s = L.summarize(ctx, assets2, ev);
+  near(s.value, 0.1 * 60000 * 160); // 週末は直前の為替
+  const usd = L.summarize(Object.assign({}, ctx, { cur: 'USD' }), assets2, ev);
+  near(usd.value, 6000); near(usd.cost, 800000 / 150);
+});
+test('暗号資産: 購入金額が空欄なら当日価格×為替で自動', () => {
+  const ctx = { prices: { C: { rows: [['2025-01-06', 50000]] } }, fx: [['2025-01-06', 150]], today: '2025-01-06' };
+  const ev = L.expandLot(ctx, assets2.C, { id: 'a', symbol: 'C', account: 'x', date: '2025-01-06', qty: 0.2 });
+  near(ev[0].cost, 0.2 * 50000 * 150); assert.equal(ev[0].est, true);
+});

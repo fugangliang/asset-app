@@ -2,12 +2,16 @@
 (function () {
   'use strict';
   const L = self.Logic, Sync = self.Sync, Chart = self.Chart;
-  const VERSION = '1.0.1';
-  const K_DATA = 'asset-app:data', K_SET = 'asset-app:settings';
+  const VERSION = '1.1.0';
+  const K_DATA = 'asset-app:data', K_SET = 'asset-app:settings', K_PREF = 'asset-app:prefs';
   const ACCOUNTS = [
     { id: 'nisa_t', label: 'NISA つみたて投資枠' }, { id: 'nisa_g', label: 'NISA 成長投資枠' },
     { id: 'ideco', label: 'iDeCo' }, { id: 'tokutei', label: '特定口座' },
-    { id: 'nisa_old', label: '旧NISA' }, { id: 'other', label: 'その他' }];
+    { id: 'nisa_old', label: '旧NISA' }, { id: 'crypto', label: '暗号資産' }, { id: 'other', label: 'その他' }];
+  const COINS = [['BTC', 'Bitcoin'], ['ETH', 'Ethereum'], ['XRP', 'XRP'], ['SOL', 'Solana'], ['DOGE', 'Dogecoin'], ['ADA', 'Cardano'],
+    ['LTC', 'Litecoin'], ['BCH', 'Bitcoin Cash'], ['LINK', 'Chainlink'], ['AVAX', 'Avalanche'], ['DOT', 'Polkadot'], ['XLM', 'Stellar']];
+  const TYPE_DESC = { fund: '投資信託（基準価額・1万口あたり）', us: '米国株・ETF（米ドル建て）', crypto: '暗号資産（米ドル建て・Coinbase）' };
+  const PRICE_LABEL = { fund: '基準価額', us: '株価', crypto: '価格' };
   const ACC = Object.fromEntries(ACCOUNTS.map((a) => [a.id, a.label]));
   const RANGES = [['1M', 31], ['3M', 92], ['6M', 183], ['1Y', 366], ['3Y', 1096], ['全期間', 0]];
   const SERIES = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8'];
@@ -22,14 +26,16 @@
     data: { v: 1, assets: {}, entries: [], updatedAt: null },
     settings: { owner: 'fugangliang', repo: 'asset-app-data', token: '', pass: '' },
     prices: {}, status: null, index: null,
-    range: '1Y', allocBy: 'account', form: null, busy: false, lastError: null,
+    range: '1Y', allocBy: 'account', cur: 'JPY', hideIdeco: false, form: null, busy: false, lastError: null,
   };
   function loadLocal() {
     try { const d = JSON.parse(localStorage.getItem(K_DATA)); if (d && d.entries) S.data = d; } catch (e) { /* 初回 */ }
     try { Object.assign(S.settings, JSON.parse(localStorage.getItem(K_SET)) || {}); } catch (e) { /* 初回 */ }
+    try { const p = JSON.parse(localStorage.getItem(K_PREF)) || {}; if (p.cur === 'USD') S.cur = 'USD'; S.hideIdeco = !!p.hideIdeco; } catch (e) { /* 初回 */ }
     Sync.setConfig(S.settings);
     if (DEMO) S.data = demoData();
   }
+  const savePrefs = () => { try { localStorage.setItem(K_PREF, JSON.stringify({ cur: S.cur, hideIdeco: S.hideIdeco })); } catch (e) { /* 保存不可でも続行 */ } };
   function saveData(opts) {
     S.data.updatedAt = new Date().toISOString();
     if (DEMO) return;
@@ -38,12 +44,13 @@
   }
   function demoData() {
     const f = { symbol: '0331418A', type: 'fund', isin: 'JP90C000H1T1', name: 'eMAXIS Slim 全世界株式(オール・カントリー)' };
-    return { v: 1, updatedAt: null, assets: { '0331418A': f, VOO: { symbol: 'VOO', type: 'us', name: 'VOO' }, AAPL: { symbol: 'AAPL', type: 'us', name: 'AAPL' } },
+    return { v: 1, updatedAt: null, assets: { '0331418A': f, VOO: { symbol: 'VOO', type: 'us', name: 'VOO' }, AAPL: { symbol: 'AAPL', type: 'us', name: 'AAPL' }, 'BTC-USD': { symbol: 'BTC-USD', type: 'crypto', name: 'Bitcoin（BTC）' } },
       entries: [
         { id: 'd1', kind: 'plan', symbol: '0331418A', account: 'nisa_t', amount: 100000, day: 8, start: '2024-01', end: null, lag: 1, fee: 0, unitsNow: null },
         { id: 'd2', kind: 'plan', symbol: '0331418A', account: 'ideco', amount: 23000, day: 26, start: '2021-04', end: null, lag: 12, fee: 171, unitsNow: null },
         { id: 'd3', kind: 'lot', symbol: 'VOO', account: 'tokutei', date: '2022-06-15', qty: 20, price: null, fx: null },
-        { id: 'd4', kind: 'lot', symbol: 'AAPL', account: 'nisa_g', date: '2024-03-01', qty: 30, price: 179.66, fx: 150.1 }] };
+        { id: 'd4', kind: 'lot', symbol: 'AAPL', account: 'nisa_g', date: '2024-03-01', qty: 30, price: 179.66, fx: 150.1 },
+        { id: 'd5', kind: 'lot', symbol: 'BTC-USD', account: 'crypto', date: '2023-10-02', qty: 0.15, amount: 620000, price: null, fx: null }] };
   }
 
   // ---------- 表示ヘルパ ----------
@@ -57,8 +64,14 @@
   const axisYen = (v) => { const a = Math.abs(v); return a >= 1e8 ? (v / 1e8).toFixed(a >= 1e9 ? 0 : 1) + '億' : a >= 1e4 ? Math.round(v / 1e4).toLocaleString() + '万' : Math.round(v).toLocaleString(); };
   const md = (d) => (d ? (+d.slice(5, 7)) + '/' + (+d.slice(8, 10)) : '—');
   const cssVar = (v) => `var(${v})`;
-  const unitLabel = (a) => (a.type === 'fund' ? '口' : '株');
-  const native = (a, v) => (v == null ? '—' : a.type === 'us' ? '$' + num(v, 2) : num(v, 0) + '円');
+  const unitLabel = (a) => (a.type === 'fund' ? '口' : a.type === 'crypto' ? ' ' + a.symbol.split('-')[0] : '株');
+  const qd = (a) => (a.type === 'fund' ? 0 : a.type === 'crypto' ? 8 : 4); // 数量の表示桁
+  const native = (a, v) => (v == null ? '—' : L.isUsd(a) ? '$' + num(v, v < 10 ? 4 : 2) : num(v, 0) + '円');
+  // 表示通貨（円／ドル）に従う金額表示。計算は logic.js 側（ctx.cur）
+  const usd = (n) => '$' + Math.abs(Math.round(n)).toLocaleString('en-US');
+  const money = (n) => (S.cur !== 'USD' ? yen(n) : n == null || !isFinite(n) ? '—' : (n < 0 ? '−' : '') + usd(n));
+  const sMoney = (n) => (S.cur !== 'USD' ? sYen(n) : n == null || !isFinite(n) ? '—' : (n >= 0 ? '+' : '−') + usd(n));
+  const axisMoney = (v) => { if (S.cur !== 'USD') return axisYen(v); const a = Math.abs(v); return '$' + (a >= 1e6 ? (v / 1e6).toFixed(a >= 1e7 ? 0 : 1) + 'M' : a >= 1e3 ? Math.round(v / 1e3).toLocaleString() + 'K' : Math.round(v)); };
   let toastTimer;
   function toast(msg, ms) {
     const t = $('#toast'); t.textContent = msg; t.classList.add('show');
@@ -68,10 +81,9 @@
 
   // ---------- 計算コンテキスト ----------
   function ctx() {
-    return { prices: S.prices, fx: (S.prices.USDJPY && S.prices.USDJPY.rows) || [], today: L.localToday() };
+    return { prices: S.prices, fx: (S.prices.USDJPY && S.prices.USDJPY.rows) || [], today: L.localToday(), cur: S.cur };
   }
   const usedSymbols = () => Array.from(new Set(S.data.entries.map((e) => e.symbol)));
-  const needsFx = () => usedSymbols().some((s) => S.data.assets[s] && S.data.assets[s].type === 'us');
 
   // ---------- 同期 ----------
   async function loadCache() {
@@ -89,7 +101,7 @@
       const st = await Sync.getJson('status.json');
       if (st) { S.status = st; Sync.cacheSet('status', st); }
       const want = usedSymbols();
-      if (needsFx()) want.push('USDJPY');
+      want.push('USDJPY'); // ドル建て表示・米ドル建て資産の換算に常に使う
       await Promise.all(want.map(async (sym) => {
         const info = st && st.symbols && st.symbols[sym];
         const sig = info ? [info.last, info.close, info.n].join('|') : null;
@@ -100,7 +112,7 @@
         if (!p) return;
         p.sig = sig; S.prices[sym] = p; Sync.cacheSet('p:' + sym, p);
         const a = S.data.assets[sym];
-        if (a && a.type === 'us' && p.name && a.name !== p.name) { a.name = p.name; if (!DEMO) localStorage.setItem(K_DATA, JSON.stringify(S.data)); }
+        if (a && a.type === 'us' && p.name && p.name !== sym && a.name !== p.name) { a.name = p.name; if (!DEMO) localStorage.setItem(K_DATA, JSON.stringify(S.data)); }
       }));
       if (!S.index || !st || S.index.updated !== st.index_updated) {
         const idx = await Sync.getJson('funds_index.json');
@@ -113,7 +125,7 @@
     } finally { S.busy = false; render(); }
   }
   function desiredWatchlist() {
-    return { symbols: usedSymbols().sort().map((s) => { const a = S.data.assets[s]; const o = { symbol: a.symbol, type: a.type }; if (a.isin) o.isin = a.isin; if (a.type === 'fund') o.name = a.name; return o; }) };
+    return { symbols: usedSymbols().sort().map((s) => { const a = S.data.assets[s]; const o = { symbol: a.symbol, type: a.type }; if (a.isin) o.isin = a.isin; if (a.type !== 'us') o.name = a.name; return o; }) };
   }
   /** 保有銘柄の一覧をデータrepoへ反映（pushでActionsが価格を取得する） */
   async function syncWatchlist() {
@@ -190,14 +202,17 @@
   }
   function viewHome() {
     const c = ctx(), A = S.data.assets;
-    const ev = S.events = L.expandAll(c, A, S.data.entries);
+    const hasIdeco = S.data.entries.some((e) => e.account === 'ideco');
+    const hide = S.hideIdeco && hasIdeco; // iDeCoを集計から外す（銘柄詳細には影響しない）
+    const ents = hide ? S.data.entries.filter((e) => e.account !== 'ideco') : S.data.entries;
+    const ev = S.events = L.expandAll(c, A, S.data.entries).filter((e) => !hide || e.account !== 'ideco');
     if (!S.data.entries.length) {
       return `<h1>資産ダッシュボード</h1>${statusBanner(c)}<div class="card"><p style="margin-top:0">まだ資産が登録されていません。</p>
         <p class="muted small">銘柄・購入日・数量・単価、または毎月の積立額を入力すると、時価・損益・IRRを自動計算します。</p>
         <a class="btn" href="#/add">最初の資産を登録</a></div>`;
     }
     const tot = L.summarize(c, A, ev);
-    const syms = usedSymbols().map((s) => ({ a: A[s], s: L.summarize(c, A, ev.filter((e) => e.symbol === s)), accs: Array.from(new Set(S.data.entries.filter((e) => e.symbol === s).map((e) => e.account))) }))
+    const syms = Array.from(new Set(ents.map((e) => e.symbol))).map((s) => ({ a: A[s], s: L.summarize(c, A, ev.filter((e) => e.symbol === s)), accs: Array.from(new Set(ents.filter((e) => e.symbol === s).map((e) => e.account))) }))
       .sort((x, y) => y.s.value - x.s.value);
     const groups = S.allocBy === 'account'
       ? ACCOUNTS.map((ac) => ({ label: ac.label, value: L.summarize(c, A, ev.filter((e) => e.account === ac.id)).value })).filter((g) => g.value > 0)
@@ -214,14 +229,18 @@
       <div class="row" style="margin-bottom:8px"><h1 style="margin:0">資産ダッシュボード</h1>
         <button class="chip" data-act="refresh">${S.busy ? '更新中…' : '更新'}</button></div>
       ${statusBanner(c)}
+      <div class="row" style="margin-bottom:10px">
+        <div class="chips"><button class="chip" data-cur="JPY" aria-pressed="${S.cur !== 'USD'}">円</button><button class="chip" data-cur="USD" aria-pressed="${S.cur === 'USD'}">ドル</button></div>
+        ${hasIdeco ? `<button class="chip" data-act="toggle-ideco" aria-pressed="${!hide}">iDeCo：${hide ? '除く' : '含む'}</button>` : ''}
+      </div>
       <div class="card">
-        <div class="row"><span class="hero-label">評価額合計</span><span class="tiny">${esc(priceAsOf())}</span></div>
-        <div class="hero-value num">${yen(tot.value)}</div>
-        <div class="num ${cls(tot.pnl)}" style="font-weight:600">${sYen(tot.pnl)}（${sPct(tot.pct)}）<span class="muted small" style="font-weight:400"> 含み損益</span></div>
+        <div class="row"><span class="hero-label">評価額合計${hide ? '（iDeCo除く）' : ''}${S.cur === 'USD' ? '・米ドル換算' : ''}</span><span class="tiny">${esc(priceAsOf())}</span></div>
+        <div class="hero-value num">${money(tot.value)}</div>
+        <div class="num ${cls(tot.pnl)}" style="font-weight:600">${sMoney(tot.pnl)}（${sPct(tot.pct)}）<span class="muted small" style="font-weight:400"> 含み損益</span></div>
         <div class="kpis">
           <div class="kpi"><div class="k">IRR（年率）</div><div class="v num ${cls(tot.irr)}">${sPct(tot.irr)}</div></div>
-          <div class="kpi"><div class="k">前日比</div><div class="v num ${cls(tot.dayChange)}">${sYen(tot.dayChange)}</div><div class="s num ${cls(tot.dayChange)}">${sPct(tot.dayPct, 2)}</div></div>
-          <div class="kpi"><div class="k">投資元本</div><div class="v num">${yen(tot.cost)}</div>${tot.pendingCost ? `<div class="s muted">約定待ち ${yen(tot.pendingCost)}</div>` : ''}</div>
+          <div class="kpi"><div class="k">前日比</div><div class="v num ${cls(tot.dayChange)}">${sMoney(tot.dayChange)}</div><div class="s num ${cls(tot.dayChange)}">${sPct(tot.dayPct, 2)}</div></div>
+          <div class="kpi"><div class="k">投資元本</div><div class="v num">${money(tot.cost)}</div>${tot.pendingCost ? `<div class="s muted">約定待ち ${yen(tot.pendingCost)}</div>` : ''}</div>
         </div>
       </div>
       <div class="card">
@@ -234,17 +253,17 @@
         <div class="row" style="margin-bottom:10px"><h2 style="margin:0">構成</h2>
           <div class="chips"><button class="chip" data-alloc="account" aria-pressed="${S.allocBy === 'account'}">口座別</button><button class="chip" data-alloc="symbol" aria-pressed="${S.allocBy === 'symbol'}">銘柄別</button></div></div>
         <div class="alloc-bar">${alloc.map((g, i) => `<span style="flex:${g.value / sum};background:${color(g, i)}" title="${esc(g.label)}"></span>`).join('')}</div>
-        <div class="alloc-list">${alloc.map((g, i) => `<div class="row"><span><i style="background:${color(g, i)}"></i>${esc(g.label)}</span><span class="num">${yen(g.value)}　<span class="muted">${(g.value / sum * 100).toFixed(1)}%</span></span></div>`).join('')}</div>
+        <div class="alloc-list">${alloc.map((g, i) => `<div class="row"><span><i style="background:${color(g, i)}"></i>${esc(g.label)}</span><span class="num">${money(g.value)}　<span class="muted">${(g.value / sum * 100).toFixed(1)}%</span></span></div>`).join('')}</div>
       </div>
       <div class="card">
         <h2>保有銘柄</h2>
         ${syms.map((x) => `<a class="hold" href="#/h/${encodeURIComponent(x.a.symbol)}">
           <div><div class="name">${esc(x.a.name)}</div><div>${x.accs.map((a) => `<span class="tag">${esc(ACC[a] || a)}</span>`).join('')}</div></div>
-          <div class="r num"><div class="val">${yen(x.s.missing ? null : x.s.value)}</div>
-            <div class="small ${cls(x.s.pnl)}">${x.s.missing ? '価格未取得' : sYen(x.s.pnl) + '（' + sPct(x.s.pct) + '）'}</div>
+          <div class="r num"><div class="val">${money(x.s.missing ? null : x.s.value)}</div>
+            <div class="small ${cls(x.s.pnl)}">${x.s.missing ? '価格未取得' : sMoney(x.s.pnl) + '（' + sPct(x.s.pct) + '）'}</div>
             <div class="tiny">IRR ${sPct(x.s.irr)}</div></div></a>`).join('')}
       </div>
-      <p class="tiny" style="text-align:center">IRRは購入・積立を出金、現在の評価額を入金とみなした年率の内部収益率（保有30日未満は非表示）。分配金・配当・売却・税は未反映。</p>`;
+      <p class="tiny" style="text-align:center">IRRは購入・積立を出金、現在の評価額を入金とみなした年率の内部収益率（保有30日未満は非表示）。分配金・配当・売却・税は未反映。${S.cur === 'USD' ? '<br>ドル表示：投資元本は各購入日の為替、評価額は直近の為替（ECB参照レート）で換算。円建て資産は為替変動も損益に含まれます。' : ''}</p>`;
   }
   function cutRange(dates) {
     const days = (RANGES.find((r) => r[0] === S.range) || [0, 0])[1];
@@ -258,10 +277,10 @@
     const se = L.series(ctx(), S.data.assets, S.events || []);
     const i0 = cutRange(se.map((p) => p.date)), cut = se.slice(i0);
     Chart.lineChart(host, {
-      label: '評価額と投資元本の推移', dates: cut.map((p) => p.date), fmtAxis: axisYen, fmtTip: yen,
+      label: '評価額と投資元本の推移', dates: cut.map((p) => p.date), fmtAxis: axisMoney, fmtTip: yen,
       series: [{ name: '評価額', color: 'var(--s1)', values: cut.map((p) => p.value), area: true },
         { name: '投資元本', color: 'var(--ref)', values: cut.map((p) => p.cost), dash: true }],
-      tipExtra: (i, v) => `<br>損益 <b>${sYen(v[0] - v[1])}</b>`,
+      tipExtra: (i, v) => `<br>損益 <b>${sMoney(v[0] - v[1])}</b>`,
     });
   }
 
@@ -279,7 +298,7 @@
     const avg = s.units ? s.costNative / s.units * L.PER[a.type] : null;
     const accs = Array.from(new Set(entries.map((e) => e.account)));
     const st = S.status && S.status.symbols[sym];
-    const perAcc = accs.length > 1 ? `<div class="card"><h2>口座別</h2>${accs.map((ac) => { const x = L.summarize(c, A, ev.filter((e) => e.account === ac)); return `<div class="hold"><div><div class="name">${esc(ACC[ac] || ac)}</div><div class="tiny num">${num(x.units, a.type === 'fund' ? 0 : 4)}${unitLabel(a)}</div></div><div class="r num"><div class="val">${yen(x.value)}</div><div class="small ${cls(x.pnl)}">${sYen(x.pnl)}（${sPct(x.pct)}）</div><div class="tiny">IRR ${sPct(x.irr)}</div></div></div>`; }).join('')}</div>` : '';
+    const perAcc = accs.length > 1 ? `<div class="card"><h2>口座別</h2>${accs.map((ac) => { const x = L.summarize(c, A, ev.filter((e) => e.account === ac)); return `<div class="hold"><div><div class="name">${esc(ACC[ac] || ac)}</div><div class="tiny num">${num(x.units, qd(a))}${unitLabel(a)}</div></div><div class="r num"><div class="val">${money(x.value)}</div><div class="small ${cls(x.pnl)}">${sMoney(x.pnl)}（${sPct(x.pct)}）</div><div class="tiny">IRR ${sPct(x.irr)}</div></div></div>`; }).join('')}</div>` : '';
     const entryHtml = entries.map((e) => {
       const mine = ev.filter((x) => x.entryId === e.id), done = L.live(mine);
       let body;
@@ -287,11 +306,11 @@
         const u = done.reduce((t, x) => t + x.units, 0), pend = mine.filter((x) => x.pending).length;
         body = `<div><b>毎月積立</b> <span class="tag">${esc(ACC[e.account] || e.account)}</span></div>
           <div class="small num">${yen(e.amount)}／月・毎月${e.day}日・${esc(e.start)}〜${esc(e.end || '継続中')}</div>
-          <div class="tiny num">約定 ${done.length}回・累計 ${yen(done.reduce((t, x) => t + x.cost, 0))}・${e.unitsNow != null ? '保有' : '推定'} ${num(u, a.type === 'fund' ? 0 : 4)}${unitLabel(a)}${pend ? `・約定待ち ${pend}回` : ''}${e.fee ? `・手数料 ${yen(e.fee)}/月` : ''}</div>`;
+          <div class="tiny num">約定 ${done.length}回・累計 ${yen(done.reduce((t, x) => t + x.cost, 0))}・${e.unitsNow != null ? '保有' : '推定'} ${num(u, qd(a))}${unitLabel(a)}${pend ? `・約定待ち ${pend}回` : ''}${e.fee ? `・手数料 ${yen(e.fee)}/月` : ''}</div>`;
       } else {
         const x = mine[0] || {};
         body = `<div><b>スポット購入</b> <span class="tag">${esc(ACC[e.account] || e.account)}</span></div>
-          <div class="small num">${esc(e.date)}・${x.unresolved ? '数量未確定' : num(x.units, a.type === 'fund' ? 0 : 4) + unitLabel(a)}・単価 ${e.price != null ? native(a, e.price) : '当日終値（自動）'}${a.type === 'us' ? '・為替 ' + (e.fx != null ? num(e.fx, 2) : '当日（自動）') : ''}</div>
+          <div class="small num">${esc(e.date)}・${x.unresolved ? '数量未確定' : num(x.units, qd(a)) + unitLabel(a)}${e.qty != null && e.amount != null ? '・購入金額 ' + yen(e.amount) : '・単価 ' + (e.price != null ? native(a, e.price) : '当日終値（自動）') + (L.isUsd(a) ? '・為替 ' + (e.fx != null ? num(e.fx, 2) : '当日（自動）') : '')}</div>
           <div class="tiny num">${x.unresolved ? '価格履歴がなく取得額を計算できません（単価を入力してください）' : '取得額 ' + yen(x.cost)}</div>`;
       }
       return `<div class="entry">${body}<div class="acts"><a class="link" href="#/edit/${e.id}">編集</a><button class="link danger" data-del="${e.id}">削除</button></div></div>`;
@@ -299,23 +318,23 @@
     return `
       <a class="link back" href="#/">‹ ダッシュボード</a>
       <h1 style="margin-bottom:2px">${esc(a.name)}</h1>
-      <div class="tiny" style="margin-bottom:12px">${esc(a.symbol)}・${a.type === 'fund' ? '投資信託（基準価額・1万口あたり）' : '米国株・ETF（米ドル建て）'}</div>
+      <div class="tiny" style="margin-bottom:12px">${esc(a.symbol)}・${TYPE_DESC[a.type]}</div>
       ${st && !st.ok ? `<div class="banner">この銘柄の価格取得に失敗しています: ${esc(st.error)}</div>` : ''}
       ${!p ? '<div class="banner">価格をまだ取得できていません。登録直後は1〜2分後にダッシュボードの「更新」を押してください。</div>' : ''}
       <div class="card">
-        <div class="row"><span class="hero-label">${a.type === 'fund' ? '基準価額' : '株価'}</span><span class="tiny">${last ? esc(last[0]) + ' 終値' : ''}</span></div>
+        <div class="row"><span class="hero-label">${PRICE_LABEL[a.type]}</span><span class="tiny">${last ? esc(last[0]) + ' 終値' : ''}</span></div>
         <div class="hero-value num" style="font-size:28px">${last ? native(a, last[1]) : '—'} <span class="small ${cls(chg)}" style="font-weight:600">${sPct(chg, 2)}</span></div>
         <div class="chips" style="margin:10px 0 2px">${RANGES.map((r) => `<button class="chip" data-range="${r[0]}" aria-pressed="${S.range === r[0]}">${r[0]}</button>`).join('')}</div>
         ${avg != null ? `<div class="legend"><span><i class="dash" style="border-color:var(--ref)"></i>平均取得単価 ${native(a, avg)}</span></div>` : ''}
         <div id="chart-price" data-sym="${esc(sym)}" data-avg="${avg == null ? '' : avg}"></div>
       </div>
       <div class="card"><div class="stats num">
-        <div><div class="k">評価額</div><div class="v">${yen(s.missing ? null : s.value)}</div></div>
-        <div><div class="k">含み損益</div><div class="v ${cls(s.pnl)}">${s.missing ? '—' : sYen(s.pnl)}</div><div class="small ${cls(s.pnl)}">${sPct(s.pct)}</div></div>
+        <div><div class="k">評価額</div><div class="v">${money(s.missing ? null : s.value)}</div></div>
+        <div><div class="k">含み損益</div><div class="v ${cls(s.pnl)}">${s.missing ? '—' : sMoney(s.pnl)}</div><div class="small ${cls(s.pnl)}">${sPct(s.pct)}</div></div>
         <div><div class="k">IRR（年率）</div><div class="v ${cls(s.irr)}">${sPct(s.irr)}</div></div>
-        <div><div class="k">前日比</div><div class="v ${cls(s.dayChange)}">${s.missing ? '—' : sYen(s.dayChange)}</div></div>
-        <div><div class="k">取得額（投資元本）</div><div class="v">${yen(s.cost)}</div></div>
-        <div><div class="k">保有数量</div><div class="v">${num(s.units, a.type === 'fund' ? 0 : 4)}<span class="small">${unitLabel(a)}</span></div></div>
+        <div><div class="k">前日比</div><div class="v ${cls(s.dayChange)}">${s.missing ? '—' : sMoney(s.dayChange)}</div></div>
+        <div><div class="k">取得額（投資元本）${S.cur === 'USD' ? '・ドル換算' : ''}</div><div class="v">${money(s.cost)}</div></div>
+        <div><div class="k">保有数量</div><div class="v">${num(s.units, qd(a))}<span class="small">${unitLabel(a)}</span></div></div>
       </div></div>
       ${perAcc}
       <div class="card"><h2>入力内容</h2>${entryHtml}
@@ -328,8 +347,8 @@
     const i0 = cutRange(rows.map((r) => r[0])), cut = rows.slice(i0);
     Chart.lineChart(host, {
       label: a.name + ' の価格推移', dates: cut.map((r) => r[0]),
-      fmtAxis: (v) => (a.type === 'us' ? '$' + num(v, v < 100 ? 2 : 0) : num(v, 0)), fmtTip: (v) => native(a, v),
-      series: [{ name: a.type === 'fund' ? '基準価額' : '株価', color: 'var(--s1)', values: cut.map((r) => r[1]), area: true }],
+      fmtAxis: (v) => (L.isUsd(a) ? '$' + num(v, v < 100 ? 2 : 0) : num(v, 0)), fmtTip: (v) => native(a, v),
+      series: [{ name: PRICE_LABEL[a.type], color: 'var(--s1)', values: cut.map((r) => r[1]), area: true }],
       ref: host.dataset.avg ? { value: +host.dataset.avg } : null,
     });
   }
@@ -345,7 +364,7 @@
       Object.assign(f, { id: entry.id, type: S.data.assets[entry.symbol].type, asset: S.data.assets[entry.symbol], account: entry.account, kind: entry.kind });
       if (entry.kind === 'lot') Object.assign(f, { date: entry.date, unit: entry.qty != null ? 'qty' : 'amount', qty: s(entry.qty), amount: s(entry.amount), price: s(entry.price), fx: s(entry.fx) });
       else Object.assign(f, { pAmount: s(entry.amount), day: s(entry.day), start: entry.start, end: entry.end || '', lag: s(entry.lag), fee: s(entry.fee), unitsNow: s(entry.unitsNow) });
-    } else if (a && a.type === 'us') f.kind = 'lot';
+    } else if (a && a.type !== 'fund') { f.kind = 'lot'; if (a.type === 'crypto') f.account = 'crypto'; }
     return f;
   }
   const planDefaults = (acc) => (acc === 'ideco' ? { lag: 12, fee: 171 } : { lag: 1, fee: 0 });
@@ -354,7 +373,7 @@
     document.querySelectorAll('[data-f]').forEach((el) => { f[el.dataset.f] = el.value; });
   }
   function viewForm() {
-    const f = S.form, isFund = f.type === 'fund', d = planDefaults(f.account);
+    const f = S.form, isFund = f.type === 'fund', isCrypto = f.type === 'crypto', d = planDefaults(f.account);
     const seg = (name, opts) => `<div class="seg">${opts.map((o) => `<button type="button" data-seg="${name}" data-val="${o[0]}" aria-pressed="${f[name] === o[0]}">${o[1]}</button>`).join('')}</div>`;
     const inp = (name, label, attrs, hint) => `<label class="f"><span>${label}</span><input data-f="${name}" value="${esc(f[name])}" ${attrs || 'type="text" inputmode="decimal"'}>${hint ? `<span class="hint">${hint}</span>` : ''}</label>`;
     let assetUi;
@@ -364,10 +383,17 @@
       assetUi = `<label class="f"><span>銘柄（ファンド名で検索）</span><input type="search" id="fund-q" placeholder="例: slim 全世界" autocomplete="off" autocapitalize="off">
         <span class="hint">${S.index ? `投資信託協会の一覧 ${S.index.funds.length.toLocaleString()} 本から検索（スペース区切りでAND）` : '投信一覧が未取得です。設定でGitHub接続を登録し「更新」してください。'}</span>
         <div class="results" id="fund-r"></div></label>`;
+    } else if (isCrypto) {
+      assetUi = `<div class="flabel">銘柄（よく使うものから選ぶか、下に入力）</div>
+        <div class="chips" style="margin-bottom:10px">${COINS.map((c) => `<button type="button" class="chip" data-coin="${c[0]}" aria-pressed="${(f.ticker || '').toUpperCase() === c[0]}">${c[0]}</button>`).join('')}</div>`
+        + inp('ticker', 'ティッカー', 'type="text" autocapitalize="characters" autocomplete="off" placeholder="例: BTC"', 'Coinbaseで米ドル建ての取扱いがある銘柄に対応。価格は登録後に自動取得します（1日3回更新）。');
     } else {
       assetUi = inp('ticker', 'ティッカー', 'type="text" autocapitalize="characters" autocomplete="off" placeholder="例: VOO"', '米国市場のティッカー（NYSE・NASDAQ）。価格は登録後に自動取得します。');
     }
-    const lotUi = `
+    const lotUi = isCrypto ? `
+      ${inp('date', '購入日', 'type="date"')}
+      ${inp('qty', '購入数量（例: 0.05）')}
+      ${inp('amount', '購入金額（円・任意）', null, '取引所の約定金額（手数料込み）を入れると正確です。空欄なら購入日の終値×為替を自動適用します。')}` : `
       ${inp('date', '購入日', 'type="date"')}
       ${isFund ? seg('unit', [['qty', '口数で入力'], ['amount', '金額で入力']]) : ''}
       ${isFund && f.unit === 'amount' ? inp('amount', '購入金額（円）', null, '口数は「金額 ÷ 基準価額」で計算します。')
@@ -379,12 +405,12 @@
       <div class="two">${inp('day', '引落日（毎月）', 'type="text" inputmode="numeric"', '1〜31。月末は31。')}${inp('start', '開始年月', 'type="month"')}</div>
       <div class="two">${inp('end', '終了年月（任意）', 'type="month"', '継続中は空欄。')}${inp('lag', '約定までの営業日数', `type="text" inputmode="numeric" placeholder="${d.lag}"`, `空欄は${d.lag}。`)}</div>
       ${inp('fee', '毎月の手数料（円・任意）', `type="text" inputmode="decimal" placeholder="${d.fee}"`, f.account === 'iDeCo' || f.account === 'ideco' ? '空欄は171円（国民年金基金連合会105円＋信託銀行66円の標準額）。金融機関により異なります。' : '入金額から差し引いて買付額を計算します。')}
-      ${inp('unitsNow', `現在の保有${isFund ? '口数' : '株数'}（任意・補正用）`, null, '証券口座に表示される実際の数量を入れると、推定値の代わりにそれで評価します。')}`;
+      ${inp('unitsNow', `現在の保有${isFund ? '口数' : isCrypto ? '数量' : '株数'}（任意・補正用）`, null, '証券口座に表示される実際の数量を入れると、推定値の代わりにそれで評価します。')}`;
     return `
       ${f.id || (f.asset && S.data.assets[f.asset.symbol]) ? `<a class="link back" href="#/h/${encodeURIComponent(f.asset.symbol)}">‹ 戻る</a>` : ''}
       <h1>${f.id ? '入力の編集' : '資産の入力'}</h1>
       <div class="card">
-        ${f.id || f.asset ? '' : seg('type', [['fund', '投資信託'], ['us', '米国株・ETF']])}
+        ${f.id || f.asset ? '' : seg('type', [['fund', '投資信託'], ['us', '米国株・ETF'], ['crypto', '暗号資産']])}
         ${assetUi}
         <label class="f"><span>口座</span><select data-f="account" data-rerender="1">${ACCOUNTS.map((a) => `<option value="${a.id}" ${f.account === a.id ? 'selected' : ''}>${a.label}</option>`).join('')}</select></label>
         ${f.id ? '' : seg('kind', [['plan', '毎月積立'], ['lot', 'スポット購入']])}
@@ -410,21 +436,34 @@
     let a = f.asset;
     if (!a) {
       if (f.type === 'fund') return toast('銘柄を検索して選択してください');
-      const t = (f.ticker || '').trim().toUpperCase();
-      if (!/^[A-Z][A-Z0-9.\-]{0,9}$/.test(t)) return toast('ティッカーを正しく入力してください');
-      a = S.data.assets[t] || { symbol: t, type: 'us', name: t };
+      let t = (f.ticker || '').trim().toUpperCase();
+      if (f.type === 'crypto') {
+        t = t.replace(/[-\/]?(USD|JPY)$/, '');
+        if (!/^[A-Z0-9]{2,10}$/.test(t)) return toast('ティッカーを正しく入力してください（例: BTC）');
+        const coin = COINS.find((c) => c[0] === t);
+        a = S.data.assets[t + '-USD'] || { symbol: t + '-USD', type: 'crypto', name: (coin ? coin[1] : t) + '（' + t + '）' };
+      } else {
+        if (!/^[A-Z][A-Z0-9.\-]{0,9}$/.test(t)) return toast('ティッカーを正しく入力してください');
+        a = S.data.assets[t] || { symbol: t, type: 'us', name: t };
+      }
     }
     const n = {}; let bad = null;
     const need = (k, label, opt) => { const v = parseNum(f[k]); if (Number.isNaN(v) || (v == null && !opt) || (v != null && v < 0)) bad = bad || label + 'を正しく入力してください'; n[k] = v; };
     let e;
     if (f.kind === 'lot') {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(f.date) || f.date > L.localToday()) return toast('購入日を正しく入力してください（未来日は不可）');
-      const byAmount = a.type === 'fund' && f.unit === 'amount';
-      if (byAmount) need('amount', '購入金額'); else need('qty', '数量');
-      need('price', '単価', true);
-      if (a.type === 'us') need('fx', '為替', true);
-      if (!bad && ((byAmount ? n.amount : n.qty) === 0 || n.price === 0 || n.fx === 0)) bad = '0は入力できません';
-      e = { kind: 'lot', symbol: a.symbol, account: f.account, date: f.date, qty: byAmount ? null : n.qty, amount: byAmount ? n.amount : null, price: n.price, fx: a.type === 'us' ? n.fx : null };
+      if (a.type === 'crypto') {
+        need('qty', '数量'); need('amount', '購入金額', true);
+        if (!bad && (n.qty === 0 || n.amount === 0)) bad = '0は入力できません';
+        e = { kind: 'lot', symbol: a.symbol, account: f.account, date: f.date, qty: n.qty, amount: n.amount, price: null, fx: null };
+      } else {
+        const byAmount = a.type === 'fund' && f.unit === 'amount';
+        if (byAmount) need('amount', '購入金額'); else need('qty', '数量');
+        need('price', '単価', true);
+        if (a.type === 'us') need('fx', '為替', true);
+        if (!bad && ((byAmount ? n.amount : n.qty) === 0 || n.price === 0 || n.fx === 0)) bad = '0は入力できません';
+        e = { kind: 'lot', symbol: a.symbol, account: f.account, date: f.date, qty: byAmount ? null : n.qty, amount: byAmount ? n.amount : null, price: n.price, fx: a.type === 'us' ? n.fx : null };
+      }
     } else {
       const d = planDefaults(f.account);
       need('pAmount', '毎月の入金額'); need('day', '引落日'); need('lag', '営業日数', true); need('fee', '手数料', true); need('unitsNow', '保有数量', true);
@@ -471,7 +510,7 @@
       <div class="card"><h2>価格の取得状況</h2>
         ${st ? `<p class="tiny" style="margin-top:0">最終取得 ${esc(new Date(st.updated).toLocaleString('ja-JP'))}${st.index_error ? '・投信一覧の更新失敗: ' + esc(st.index_error) : ''}</p><table class="st">${rows}</table>` : '<p class="muted small" style="margin:0">未取得です。</p>'}
       </div>
-      <p class="tiny" style="text-align:center">v${VERSION}・価格: 投資信託協会／Nasdaq／ECB参照レート（Frankfurter）・終値ベース</p>`;
+      <p class="tiny" style="text-align:center">v${VERSION}・価格: 投資信託協会／Nasdaq／Coinbase／ECB参照レート（Frankfurter）・終値ベース</p>`;
   }
   async function saveSettings() {
     document.querySelectorAll('[data-s]').forEach((el) => { S.settings[el.dataset.s] = el.value.trim(); });
@@ -535,10 +574,17 @@
     const d = t.dataset;
     try {
       if (d.range) { S.range = d.range; render(); }
+      else if (d.cur) { S.cur = d.cur; savePrefs(); render(); }
+      else if (d.act === 'toggle-ideco') { S.hideIdeco = !S.hideIdeco; savePrefs(); render(); }
+      else if (d.coin) { readForm(); S.form.ticker = d.coin; render(); }
       else if (d.alloc) { S.allocBy = d.alloc; render(); }
       else if (d.seg) {
         readForm(); S.form[d.seg] = d.val;
-        if (d.seg === 'type') { S.form.asset = null; if (d.val === 'us') S.form.kind = 'lot'; }
+        if (d.seg === 'type') {
+          S.form.asset = null; S.form.ticker = '';
+          if (d.val !== 'fund') S.form.kind = 'lot';
+          if (d.val === 'crypto') S.form.account = 'crypto'; else if (S.form.account === 'crypto') S.form.account = 'nisa_t';
+        }
         render();
       } else if (d.fund) {
         readForm();

@@ -5,7 +5,8 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  const PER = { fund: 10000, us: 1 }; // 投信の単価は1万口あたり
+  const PER = { fund: 10000, us: 1, crypto: 1 }; // 投信の単価は1万口あたり
+  const isUsd = (a) => a.type === 'us' || a.type === 'crypto'; // 米ドル建て資産
   const DAY = 86400000;
 
   const toMs = (s) => Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10));
@@ -44,31 +45,49 @@
   function unitJpy(ctx, asset, date) {
     const p = closeOn(rowsOf(ctx, asset.symbol), date);
     if (p == null) return null;
-    if (asset.type === 'us') {
+    if (isUsd(asset)) {
       const f = closeOn(ctx.fx, date);
-      return f == null ? null : p * f;
+      return f == null ? null : (p / PER[asset.type]) * f;
     }
     return p / PER.fund;
   }
+  /** 表示通貨（ctx.cur = 'JPY' | 'USD'）での1単位の評価額 */
+  function unitIn(ctx, asset, date) {
+    if (ctx.cur !== 'USD') return unitJpy(ctx, asset, date);
+    const p = closeOn(rowsOf(ctx, asset.symbol), date);
+    if (p == null) return null;
+    if (isUsd(asset)) return p / PER[asset.type];
+    const f = closeOn(ctx.fx, date);
+    return f == null ? null : p / PER.fund / f;
+  }
+  const costIn = (ctx, e) => (ctx.cur === 'USD' ? e.costUsd : e.cost);
 
   /** スポット購入 → イベント1件（解決不能なら unresolved） */
   function expandLot(ctx, asset, lot) {
     const base = { entryId: lot.id, src: 'lot', symbol: lot.symbol, account: lot.account, date: lot.date, execDate: lot.date };
     let est = false;
+    const fxd = closeOn(ctx.fx, lot.date);
+    // 数量と円建ての購入金額が両方ある場合（暗号資産など）：価格履歴がなくても確定
+    if (lot.qty != null && lot.amount != null) {
+      const f0 = lot.fx != null ? lot.fx : fxd;
+      const usd = f0 == null ? null : lot.amount / f0;
+      return [Object.assign(base, { units: lot.qty, cost: lot.amount, costNative: isUsd(asset) ? usd : lot.amount, costUsd: usd, est: false })];
+    }
     let price = lot.price;
     if (price == null) { price = closeOn(rowsOf(ctx, lot.symbol), lot.date); est = true; }
     if (price == null) return [Object.assign(base, { unresolved: true, reason: '購入日の価格がない' })];
     let unit = price / PER[asset.type]; // 現地通貨建て1単位
     let fx = 1;
-    if (asset.type === 'us') {
+    if (isUsd(asset)) {
       fx = lot.fx;
-      if (fx == null) { fx = closeOn(ctx.fx, lot.date); est = true; }
+      if (fx == null) { fx = fxd; est = true; }
       if (fx == null) return [Object.assign(base, { unresolved: true, reason: '購入日の為替がない' })];
     }
     let units, cost;
     if (lot.qty != null) { units = lot.qty; cost = units * unit * fx; }
     else { cost = lot.amount; units = cost / (unit * fx); }
-    return [Object.assign(base, { units, cost, costNative: cost / fx, est })];
+    const costUsd = isUsd(asset) ? cost / fx : (fxd == null ? null : cost / fxd);
+    return [Object.assign(base, { units, cost, costNative: cost / fx, costUsd, est })];
   }
 
   /** 毎月積立 → 月次イベント列。約定日は「引落日以降の最初の営業日＋lag営業日」の価格 */
@@ -91,12 +110,13 @@
         out.push(Object.assign(ev, { pending: true, cost: plan.amount }));
       } else {
         const execDate = rows[i][0];
-        const fx = asset.type === 'us' ? closeOn(ctx.fx, execDate) : 1;
+        const fxe = closeOn(ctx.fx, execDate);
+        const fx = isUsd(asset) ? fxe : 1;
         if (fx == null) out.push(Object.assign(ev, { pending: true, cost: plan.amount }));
         else {
           const unit = (rows[i][1] / PER[asset.type]) * fx;
           const net = plan.amount - (plan.fee || 0);
-          out.push(Object.assign(ev, { execDate, units: net / unit, cost: plan.amount, costNative: plan.amount / fx, est: true }));
+          out.push(Object.assign(ev, { execDate, units: net / unit, cost: plan.amount, costNative: plan.amount / fx, costUsd: fxe == null ? null : plan.amount / fxe, est: true }));
         }
       }
       if (++m > 12) { m = 1; y++; }
@@ -145,19 +165,20 @@
     let cost = 0, value = 0, prev = 0, missing = false, first = null;
     for (const e of ev) {
       (bySym[e.symbol] = bySym[e.symbol] || { units: 0 }).units += e.units;
-      cost += e.cost;
+      const c = costIn(ctx, e);
+      if (c == null) missing = true; else cost += c;
       if (!first || e.date < first) first = e.date;
     }
     for (const sym in bySym) {
       const a = assets[sym], rows = rowsOf(ctx, sym);
-      const u = unitJpy(ctx, a, ctx.today);
+      const u = unitIn(ctx, a, ctx.today);
       if (u == null) { missing = true; continue; }
       value += bySym[sym].units * u;
       const i = idxOnOrBefore(rows, ctx.today);
-      const pu = i > 0 ? unitJpy(ctx, a, rows[i - 1][0]) : null;
+      const pu = i > 0 ? unitIn(ctx, a, rows[i - 1][0]) : null;
       prev += bySym[sym].units * (pu == null ? u : pu);
     }
-    const flows = ev.map((e) => ({ date: e.date, amount: -e.cost }));
+    const flows = ev.map((e) => ({ date: e.date, amount: -(costIn(ctx, e) || 0) }));
     flows.push({ date: ctx.today, amount: value });
     const days = first ? (toMs(ctx.today) - toMs(first)) / DAY : 0;
     const irr = !missing && cost > 0 && days >= (minIrrDays == null ? 30 : minIrrDays) ? xirr(flows) : null;
@@ -165,8 +186,8 @@
     return {
       units, cost, value, pnl: value - cost, pct: cost > 0 ? (value - cost) / cost : null, irr,
       dayChange: value - prev, dayPct: prev > 0 ? (value - prev) / prev : null,
-      first, days, missing, costNative: ev.reduce((s, e) => s + e.costNative, 0),
-      pendingCost: events.filter((e) => e.pending).reduce((s, e) => s + e.cost, 0),
+      first, days, missing, costNative: ev.reduce((s, e) => s + (e.costNative || 0), 0),
+      pendingCost: events.filter((e) => e.pending).reduce((s, e) => s + e.cost, 0), // 常に円
       unresolved: events.filter((e) => e.unresolved).length,
     };
   }
@@ -182,15 +203,15 @@
     for (let t = toMs(ev[0].execDate); t <= end; t += DAY) {
       const dow = new Date(t).getUTCDay();
       const d = fromMs(t);
-      while (k < ev.length && ev[k].execDate <= d) { units[ev[k].symbol] = (units[ev[k].symbol] || 0) + ev[k].units; cost += ev[k].cost; k++; }
+      while (k < ev.length && ev[k].execDate <= d) { units[ev[k].symbol] = (units[ev[k].symbol] || 0) + ev[k].units; cost += costIn(ctx, ev[k]) || 0; k++; }
       if ((dow === 0 || dow === 6) && t !== end) continue;
       let v = 0;
-      for (const sym in units) { const u = unitJpy(ctx, assets[sym], d); if (u != null) v += units[sym] * u; }
+      for (const sym in units) { const u = unitIn(ctx, assets[sym], d); if (u != null) v += units[sym] * u; }
       out.push({ date: d, value: v, cost });
     }
     return out;
   }
 
-  return { PER, toMs, fromMs, addDays, localToday, idxOnOrBefore, idxOnOrAfter, closeOn, unitJpy,
+  return { PER, isUsd, unitIn, toMs, fromMs, addDays, localToday, idxOnOrBefore, idxOnOrAfter, closeOn, unitJpy,
     expandLot, expandPlan, expandAll, live, xirr, summarize, series };
 });
