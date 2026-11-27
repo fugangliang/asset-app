@@ -40,3 +40,5 @@ iPhoneで使う個人資産管理PWA。銘柄・購入（日付/数量/単価）
 
 - 2026-11-24: v1.0.0 作成。RF裁定=cfo-app廃止・置換／時価はGitHub Actions／対象は投信＋米国株／銘柄一覧は非公開。ロジックテスト14件通過、デモデータで全画面を確認。
 - 2026-11-24: 公開（RF承認「コードのみの配信はOK」）。本体=github `fugangliang/asset-app`（public）・配信=https://fugangliang.github.io/asset-app/ 。データ=`fugangliang/asset-app-data`（private）。Actions初回実行で投信・米国株（Nasdaq）・為替とも取得成功を確認（ghに workflow スコープ追加済み）。RF残作業=iPhoneでFine-grained PAT作成→設定画面に登録→ホーム画面に追加。`[要確認]` iPhone実機での動作（入力・チャートのタッチ操作・バックアップ）。
+- 2026-11-24（続き）: v1.0.1＝設定画面にトークン作成リンク（入力済みURL）を追加・公開済み。RFがiPhoneで初期設定（Fine-grained PAT登録・接続テスト・ホーム画面追加）を完了。銘柄の登録はこれから。
+- 繰越: ①RFが最初の銘柄を登録後、Actionsが新銘柄の価格を取得するか（watchlist.json の自動更新→push→取得）を実機で確認 `[要確認]` ②iPhone実機でのチャートのタッチ操作・バックアップ往復 `[要確認]` ③iDeCo既定値・株式分割・米国株10年超の手入力（上記「既知の制約」）④ローカルの `asset-app-data` はアプリ/Actionsがリモートを更新するため、作業前に `git pull` すること。
