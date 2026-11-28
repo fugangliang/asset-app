@@ -151,3 +151,69 @@ test('暗号資産: 購入金額が空欄なら当日価格×為替で自動', (
   const ev = L.expandLot(ctx, assets2.C, { id: 'a', symbol: 'C', account: 'x', date: '2025-01-06', qty: 0.2 });
   near(ev[0].cost, 0.2 * 50000 * 150); assert.equal(ev[0].est, true);
 });
+
+// ---------- 売却 ----------
+test('売却: 一部売却で元本は平均取得単価ぶん減り、実現損益が出る', () => {
+  const ctx = { prices: { F: { rows: [['2025-01-06', 10000], ['2025-07-07', 12000], ['2026-01-06', 15000]] } }, fx: [], today: '2026-01-06' };
+  const ev = L.expandAll(ctx, assets, [
+    { id: 'a', kind: 'lot', symbol: 'F', account: 'x', date: '2025-01-06', qty: 1000000, price: 10000 },
+    { id: 's', kind: 'sell', symbol: 'F', account: 'x', date: '2025-07-07', qty: 400000, price: null }]);
+  const s = L.summarize(ctx, assets, ev, 0);
+  near(s.units, 600000); near(s.cost, 600000); near(s.value, 900000); near(s.pnl, 300000);
+  near(s.realized, 80000); near(s.proceeds, 480000); near(s.invested, 1000000);
+  // IRR: -100万(1/6) +48万(7/7) +90万(翌1/6)
+  near(s.irr, L.xirr([{ date: '2025-01-06', amount: -1000000 }, { date: '2025-07-07', amount: 480000 }, { date: '2026-01-06', amount: 900000 }]), 1e-9);
+  assert.ok(s.irr > 0.38);
+});
+test('売却: 全量売却で保有0・元本0・IRRは売却までの実績', () => {
+  const ctx = { prices: { F: { rows: [['2025-01-06', 10000], ['2026-01-06', 11000], ['2026-06-01', 9000]] } }, fx: [], today: '2026-06-01' };
+  const ev = L.expandAll(ctx, assets, [
+    { id: 'a', kind: 'lot', symbol: 'F', account: 'x', date: '2025-01-06', qty: 300000, price: 10000 },
+    { id: 's', kind: 'sell', symbol: 'F', account: 'x', date: '2026-01-06', qty: 300000, amount: 330000 }]);
+  const s = L.summarize(ctx, assets, ev, 0);
+  assert.equal(s.units, 0); assert.equal(s.cost, 0); assert.equal(s.value, 0); assert.equal(s.pnl, 0);
+  near(s.realized, 30000); near(s.irr, 0.10, 1e-6);
+  const se = L.series(ctx, assets, ev);
+  assert.equal(se[se.length - 1].value, 0); near(se[se.length - 1].cost, 0);
+});
+test('売却: 保有を超える数量・購入前の売却は unresolved（集計から除外）', () => {
+  const ctx = { prices: { F: { rows: [['2025-01-06', 10000], ['2026-01-06', 12000]] } }, fx: [], today: '2026-01-06' };
+  const lot = { id: 'a', kind: 'lot', symbol: 'F', account: 'x', date: '2025-06-02', qty: 100000, price: 10000 };
+  for (const sell of [{ date: '2025-12-01', qty: 100001 }, { date: '2025-03-03', qty: 50000 }]) {
+    const ev = L.expandAll(ctx, assets, [lot, Object.assign({ id: 's', kind: 'sell', symbol: 'F', account: 'x', price: 11000 }, sell)]);
+    const x = ev.find((e) => e.sell);
+    assert.ok(x.unresolved && x.over);
+    const s = L.summarize(ctx, assets, ev);
+    near(s.units, 100000); assert.equal(s.unresolved, 1); assert.equal(s.sells, 0);
+  }
+});
+test('売却: 口座ごとに別の平均取得単価、同日の購入は売却より先', () => {
+  const ctx = { prices: { F: { rows: [['2025-01-06', 10000], ['2025-06-02', 20000], ['2026-01-06', 20000]] } }, fx: [], today: '2026-01-06' };
+  const ev = L.expandAll(ctx, assets, [
+    { id: 's', kind: 'sell', symbol: 'F', account: 'y', date: '2025-06-02', qty: 10000, price: 20000 },
+    { id: 'a', kind: 'lot', symbol: 'F', account: 'x', date: '2025-01-06', qty: 10000, price: 10000 },
+    { id: 'b', kind: 'lot', symbol: 'F', account: 'y', date: '2025-06-02', qty: 10000, price: 20000 }]);
+  const x = ev.find((e) => e.sell);
+  assert.ok(!x.unresolved); near(x.realized, 0); // 口座yの原価2万円で売却（口座xの1万円と混ざらない）
+  near(L.summarize(ctx, assets, ev).cost, 10000);
+});
+test('売却: 米国株はドル建ての実現損益が為替の影響を受けない', () => {
+  const ctx = { prices: { U: { rows: [['2025-01-06', 100], ['2025-07-07', 150], ['2026-01-06', 150]] } },
+    fx: [['2025-01-06', 100], ['2025-07-07', 160], ['2026-01-06', 160]], today: '2026-01-06' };
+  const ents = [{ id: 'a', kind: 'lot', symbol: 'U', account: 'x', date: '2025-01-06', qty: 10, price: null, fx: null },
+    { id: 's', kind: 'sell', symbol: 'U', account: 'x', date: '2025-07-07', qty: 4, price: null, fx: null }];
+  const j = L.summarize(ctx, assets, L.expandAll(ctx, assets, ents), 0);
+  near(j.realized, 4 * 150 * 160 - 4 * 100 * 100); near(j.cost, 6 * 100 * 100);
+  const cu = Object.assign({}, ctx, { cur: 'USD' });
+  const u = L.summarize(cu, assets, L.expandAll(cu, assets, ents), 0);
+  near(u.realized, 4 * 50); near(u.cost, 600); near(u.value, 900);
+});
+test('売却: 積立の一部売却', () => {
+  const rows = mkRows('2025-01-01', '2025-12-31', () => 10000);
+  const ctx = { prices: { F: { rows } }, fx: [], today: '2025-12-31' };
+  const ev = L.expandAll(ctx, assets, [
+    { id: 'p', kind: 'plan', symbol: 'F', account: 'x', amount: 10000, day: 1, start: '2025-01', end: '2025-10', lag: 0, fee: 0 },
+    { id: 's', kind: 'sell', symbol: 'F', account: 'x', date: '2025-11-04', qty: 50000, price: 10000 }]);
+  const s = L.summarize(ctx, assets, ev, 0);
+  near(s.units, 50000); near(s.cost, 50000); near(s.realized, 0); near(s.value, 50000);
+});

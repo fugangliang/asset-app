@@ -2,7 +2,7 @@
 (function () {
   'use strict';
   const L = self.Logic, Sync = self.Sync, Chart = self.Chart;
-  const VERSION = '1.1.0';
+  const VERSION = '1.2.0';
   const K_DATA = 'asset-app:data', K_SET = 'asset-app:settings', K_PREF = 'asset-app:prefs';
   const ACCOUNTS = [
     { id: 'nisa_t', label: 'NISA つみたて投資枠' }, { id: 'nisa_g', label: 'NISA 成長投資枠' },
@@ -50,7 +50,8 @@
         { id: 'd2', kind: 'plan', symbol: '0331418A', account: 'ideco', amount: 23000, day: 26, start: '2021-04', end: null, lag: 12, fee: 171, unitsNow: null },
         { id: 'd3', kind: 'lot', symbol: 'VOO', account: 'tokutei', date: '2022-06-15', qty: 20, price: null, fx: null },
         { id: 'd4', kind: 'lot', symbol: 'AAPL', account: 'nisa_g', date: '2024-03-01', qty: 30, price: 179.66, fx: 150.1 },
-        { id: 'd5', kind: 'lot', symbol: 'BTC-USD', account: 'crypto', date: '2023-10-02', qty: 0.15, amount: 620000, price: null, fx: null }] };
+        { id: 'd5', kind: 'lot', symbol: 'BTC-USD', account: 'crypto', date: '2023-10-02', qty: 0.15, amount: 620000, price: null, fx: null },
+        { id: 'd6', kind: 'sell', symbol: 'AAPL', account: 'nisa_g', date: '2025-06-02', qty: 10, price: null, fx: null, amount: null }] };
   }
 
   // ---------- 表示ヘルパ ----------
@@ -191,8 +192,10 @@
     const noPrice = usedSymbols().filter((s) => !S.prices[s]);
     if (noPrice.length && Sync.configured()) out.push('価格をまだ取得できていない銘柄: ' + noPrice.map(esc).join('、') + '（登録直後は1〜2分後に「更新」）');
     const ev = S.events || [];
-    const unres = ev.filter((e) => e.unresolved).length;
+    const unres = ev.filter((e) => e.unresolved && !e.sell).length;
     if (unres && !noPrice.length) out.push(`購入日の価格がなく取得額を計算できない入力が ${unres} 件あります（単価を手入力してください）。`);
+    const badSell = ev.filter((e) => e.unresolved && e.sell);
+    if (badSell.length) out.push(`集計に反映できていない売却が ${badSell.length} 件あります（${esc(Array.from(new Set(badSell.map((e) => e.reason))).join('・'))}）。銘柄: ${Array.from(new Set(badSell.map((e) => e.symbol))).map(esc).join('、')}`);
     return out.map((t) => `<div class="banner">${t}</div>`).join('');
   }
   function priceAsOf() {
@@ -237,6 +240,7 @@
         <div class="row"><span class="hero-label">評価額合計${hide ? '（iDeCo除く）' : ''}${S.cur === 'USD' ? '・米ドル換算' : ''}</span><span class="tiny">${esc(priceAsOf())}</span></div>
         <div class="hero-value num">${money(tot.value)}</div>
         <div class="num ${cls(tot.pnl)}" style="font-weight:600">${sMoney(tot.pnl)}（${sPct(tot.pct)}）<span class="muted small" style="font-weight:400"> 含み損益</span></div>
+        ${tot.sells ? `<div class="num small ${cls(tot.realized)}" style="margin-top:2px">${sMoney(tot.realized)}<span class="muted" style="font-weight:400"> 実現損益（売却 ${tot.sells}回・受取 ${money(tot.proceeds)}）</span></div>` : ''}
         <div class="kpis">
           <div class="kpi"><div class="k">IRR（年率）</div><div class="v num ${cls(tot.irr)}">${sPct(tot.irr)}</div></div>
           <div class="kpi"><div class="k">前日比</div><div class="v num ${cls(tot.dayChange)}">${sMoney(tot.dayChange)}</div><div class="s num ${cls(tot.dayChange)}">${sPct(tot.dayPct, 2)}</div></div>
@@ -259,11 +263,11 @@
         <h2>保有銘柄</h2>
         ${syms.map((x) => `<a class="hold" href="#/h/${encodeURIComponent(x.a.symbol)}">
           <div><div class="name">${esc(x.a.name)}</div><div>${x.accs.map((a) => `<span class="tag">${esc(ACC[a] || a)}</span>`).join('')}</div></div>
-          <div class="r num"><div class="val">${money(x.s.missing ? null : x.s.value)}</div>
-            <div class="small ${cls(x.s.pnl)}">${x.s.missing ? '価格未取得' : sMoney(x.s.pnl) + '（' + sPct(x.s.pct) + '）'}</div>
+          <div class="r num"><div class="val">${x.s.sells && x.s.units === 0 ? '<span class="muted">売却済み</span>' : money(x.s.missing ? null : x.s.value)}</div>
+            <div class="small ${cls(x.s.sells && x.s.units === 0 ? x.s.realized : x.s.pnl)}">${x.s.missing ? '価格未取得' : x.s.sells && x.s.units === 0 ? '実現 ' + sMoney(x.s.realized) : sMoney(x.s.pnl) + '（' + sPct(x.s.pct) + '）'}</div>
             <div class="tiny">IRR ${sPct(x.s.irr)}</div></div></a>`).join('')}
       </div>
-      <p class="tiny" style="text-align:center">IRRは購入・積立を出金、現在の評価額を入金とみなした年率の内部収益率（保有30日未満は非表示）。分配金・配当・売却・税は未反映。${S.cur === 'USD' ? '<br>ドル表示：投資元本は各購入日の為替、評価額は直近の為替（ECB参照レート）で換算。円建て資産は為替変動も損益に含まれます。' : ''}</p>`;
+      <p class="tiny" style="text-align:center">IRRは購入・積立を出金、現在の評価額を入金とみなした年率の内部収益率（保有30日未満は非表示）。売却は受取額を入金として反映し、投資元本は口座ごとの平均取得単価で減額。分配金・配当・税は未反映。${S.cur === 'USD' ? '<br>ドル表示：投資元本は各購入日の為替、評価額は直近の為替（ECB参照レート）で換算。円建て資産は為替変動も損益に含まれます。' : ''}</p>`;
   }
   function cutRange(dates) {
     const days = (RANGES.find((r) => r[0] === S.range) || [0, 0])[1];
@@ -307,6 +311,11 @@
         body = `<div><b>毎月積立</b> <span class="tag">${esc(ACC[e.account] || e.account)}</span></div>
           <div class="small num">${yen(e.amount)}／月・毎月${e.day}日・${esc(e.start)}〜${esc(e.end || '継続中')}</div>
           <div class="tiny num">約定 ${done.length}回・累計 ${yen(done.reduce((t, x) => t + x.cost, 0))}・${e.unitsNow != null ? '保有' : '推定'} ${num(u, qd(a))}${unitLabel(a)}${pend ? `・約定待ち ${pend}回` : ''}${e.fee ? `・手数料 ${yen(e.fee)}/月` : ''}</div>`;
+      } else if (e.kind === 'sell') {
+        const x = mine[0] || {};
+        body = `<div><b>売却</b> <span class="tag">${esc(ACC[e.account] || e.account)}</span></div>
+          <div class="small num">${esc(e.date)}・${num(e.qty, qd(a))}${unitLabel(a)}・${e.amount != null ? '受取金額 ' + yen(e.amount) : '単価 ' + (e.price != null ? native(a, e.price) : '当日終値（自動）') + (L.isUsd(a) ? '・為替 ' + (e.fx != null ? num(e.fx, 2) : '当日（自動）') : '')}</div>
+          <div class="tiny num">${x.unresolved ? '<span class="down">集計に未反映：' + esc(x.reason || '') + '</span>' : '受取 ' + yen(x.proceeds) + '・取得原価 ' + yen(-x.cost) + '・実現損益 <span class="' + cls(x.realized) + '">' + sYen(x.realized) + '</span>'}</div>`;
       } else {
         const x = mine[0] || {};
         body = `<div><b>スポット購入</b> <span class="tag">${esc(ACC[e.account] || e.account)}</span></div>
@@ -335,10 +344,13 @@
         <div><div class="k">前日比</div><div class="v ${cls(s.dayChange)}">${s.missing ? '—' : sMoney(s.dayChange)}</div></div>
         <div><div class="k">取得額（投資元本）${S.cur === 'USD' ? '・ドル換算' : ''}</div><div class="v">${money(s.cost)}</div></div>
         <div><div class="k">保有数量</div><div class="v">${num(s.units, qd(a))}<span class="small">${unitLabel(a)}</span></div></div>
+        ${s.sells ? `<div><div class="k">実現損益（売却 ${s.sells}回）</div><div class="v ${cls(s.realized)}">${sMoney(s.realized)}</div></div>
+        <div><div class="k">売却の受取額</div><div class="v">${money(s.proceeds)}</div></div>` : ''}
       </div></div>
       ${perAcc}
       <div class="card"><h2>入力内容</h2>${entryHtml}
-        <a class="btn sec" style="margin-top:14px" href="#/add/${encodeURIComponent(sym)}">この銘柄に追加入力</a></div>`;
+        <a class="btn sec" style="margin-top:14px" href="#/add/${encodeURIComponent(sym)}">この銘柄に追加入力</a>
+        ${s.units > 0 ? `<a class="btn sec" href="#/sell/${encodeURIComponent(sym)}">この銘柄を売却</a>` : ''}</div>`;
   }
   function drawHolding() {
     const host = $('#chart-price'); if (!host) return;
@@ -354,7 +366,7 @@
   }
 
   // ---------- 画面: 入力 ----------
-  function newForm(sym, entry) {
+  function newForm(sym, entry, sell) {
     const a = sym ? S.data.assets[sym] : null;
     const f = { id: null, type: a ? a.type : 'fund', asset: a || null, ticker: '', account: 'nisa_t', kind: 'plan', unit: 'qty',
       date: L.localToday(), qty: '', amount: '', price: '', fx: '',
@@ -362,10 +374,21 @@
     if (entry) {
       const s = (v) => (v == null ? '' : String(v));
       Object.assign(f, { id: entry.id, type: S.data.assets[entry.symbol].type, asset: S.data.assets[entry.symbol], account: entry.account, kind: entry.kind });
-      if (entry.kind === 'lot') Object.assign(f, { date: entry.date, unit: entry.qty != null ? 'qty' : 'amount', qty: s(entry.qty), amount: s(entry.amount), price: s(entry.price), fx: s(entry.fx) });
+      if (entry.kind !== 'plan') Object.assign(f, { date: entry.date, unit: entry.qty != null ? 'qty' : 'amount', qty: s(entry.qty), amount: s(entry.amount), price: s(entry.price), fx: s(entry.fx) });
       else Object.assign(f, { pAmount: s(entry.amount), day: s(entry.day), start: entry.start, end: entry.end || '', lag: s(entry.lag), fee: s(entry.fee), unitsNow: s(entry.unitsNow) });
     } else if (a && a.type !== 'fund') { f.kind = 'lot'; if (a.type === 'crypto') f.account = 'crypto'; }
+    if (!entry && a) { // 既存銘柄：直近に使った口座を既定に
+      const own = S.data.entries.filter((e) => e.symbol === a.symbol);
+      if (own.length) f.account = own[own.length - 1].account;
+      if (sell) f.kind = 'sell';
+    }
     return f;
+  }
+  /** 売却フォーム用：その口座の現在の保有数量（編集中の売却自身は除く） */
+  function heldUnits(f) {
+    if (!f.asset || !S.data.assets[f.asset.symbol]) return 0;
+    const ents = S.data.entries.filter((e) => e.symbol === f.asset.symbol && e.account === f.account && e.id !== f.id);
+    return L.live(L.expandAll(ctx(), S.data.assets, ents)).reduce((t, e) => t + e.units, 0);
   }
   const planDefaults = (acc) => (acc === 'ideco' ? { lag: 12, fee: 171 } : { lag: 1, fee: 0 });
   function readForm() {
@@ -400,6 +423,18 @@
         : inp('qty', isFund ? '購入口数' : '購入株数')}
       ${inp('price', isFund ? '購入単価（基準価額・1万口あたり・円）' : '購入単価（米ドル）', null, '空欄なら購入日の終値を自動適用します。')}
       ${isFund ? '' : inp('fx', '購入時の為替（円/ドル）', null, '空欄なら購入日の参照レートを自動適用します。')}`;
+    const uWord = isFund ? '口数' : isCrypto ? '数量' : '株数';
+    let sellUi = '';
+    if (f.kind === 'sell') {
+      const held = heldUnits(f), hasFix = f.asset && S.data.entries.some((e) => e.kind === 'plan' && e.symbol === f.asset.symbol && e.account === f.account && e.unitsNow != null);
+      sellUi = `
+      ${inp('date', '売却日', 'type="date"')}
+      ${inp('qty', '売却' + uWord, null, f.asset ? `この口座の保有: ${num(held, qd(f.asset))}${unitLabel(f.asset)}${held > 0 ? ` <button type="button" class="link" data-act="sell-all" data-val="${held}">全部売却</button>` : ''}` : '')}
+      ${inp('amount', '受取金額（円・任意）', null, '証券会社・取引所の受渡金額を入れると正確です（入力した金額をそのまま使います）。空欄なら下の単価で計算します。')}
+      ${isCrypto ? '' : inp('price', isFund ? '売却単価（基準価額・1万口あたり・円）' : '売却単価（米ドル）', null, '空欄なら売却日の終値を自動適用します。')}
+      ${f.type === 'us' ? inp('fx', '売却時の為替（円/ドル）', null, '空欄なら売却日の参照レートを自動適用します。') : ''}
+      ${hasFix ? '<p class="tiny">この口座の積立に「現在の保有数量（補正用）」が入っています。補正値は売却前の数量として扱われるため、売却後の数量に書き換えないでください。</p>' : ''}`;
+    }
     const planUi = `
       ${inp('pAmount', '毎月の入金額（円）')}
       <div class="two">${inp('day', '引落日（毎月）', 'type="text" inputmode="numeric"', '1〜31。月末は31。')}${inp('start', '開始年月', 'type="month"')}</div>
@@ -408,13 +443,13 @@
       ${inp('unitsNow', `現在の保有${isFund ? '口数' : isCrypto ? '数量' : '株数'}（任意・補正用）`, null, '証券口座に表示される実際の数量を入れると、推定値の代わりにそれで評価します。')}`;
     return `
       ${f.id || (f.asset && S.data.assets[f.asset.symbol]) ? `<a class="link back" href="#/h/${encodeURIComponent(f.asset.symbol)}">‹ 戻る</a>` : ''}
-      <h1>${f.id ? '入力の編集' : '資産の入力'}</h1>
+      <h1>${f.id ? '入力の編集' : f.kind === 'sell' ? '売却の入力' : '資産の入力'}</h1>
       <div class="card">
         ${f.id || f.asset ? '' : seg('type', [['fund', '投資信託'], ['us', '米国株・ETF'], ['crypto', '暗号資産']])}
         ${assetUi}
         <label class="f"><span>口座</span><select data-f="account" data-rerender="1">${ACCOUNTS.map((a) => `<option value="${a.id}" ${f.account === a.id ? 'selected' : ''}>${a.label}</option>`).join('')}</select></label>
-        ${f.id ? '' : seg('kind', [['plan', '毎月積立'], ['lot', 'スポット購入']])}
-        ${f.kind === 'plan' ? planUi : lotUi}
+        ${f.id ? '' : seg('kind', [['plan', '毎月積立'], ['lot', 'スポット購入'], ['sell', '売却']])}
+        ${f.kind === 'plan' ? planUi : f.kind === 'sell' ? sellUi : lotUi}
         <button class="btn" data-act="save">${f.id ? '変更を保存' : '登録'}</button>
       </div>`;
   }
@@ -450,7 +485,20 @@
     const n = {}; let bad = null;
     const need = (k, label, opt) => { const v = parseNum(f[k]); if (Number.isNaN(v) || (v == null && !opt) || (v != null && v < 0)) bad = bad || label + 'を正しく入力してください'; n[k] = v; };
     let e;
-    if (f.kind === 'lot') {
+    if (f.kind === 'sell') {
+      if (!S.data.assets[a.symbol]) return toast('この銘柄の購入・積立を先に登録してください');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(f.date) || f.date > L.localToday()) return toast('売却日を正しく入力してください（未来日は不可）');
+      need('qty', '売却数量'); need('amount', '受取金額', true);
+      if (a.type !== 'crypto') need('price', '単価', true);
+      if (a.type === 'us') need('fx', '為替', true);
+      if (!bad && (n.qty === 0 || n.amount === 0 || n.price === 0 || n.fx === 0)) bad = '0は入力できません';
+      e = { kind: 'sell', symbol: a.symbol, account: f.account, date: f.date, qty: n.qty, amount: n.amount, price: n.price == null ? null : n.price, fx: n.fx == null ? null : n.fx };
+      if (!bad) { // 売却日時点の保有数量を超えていないか
+        const probe = Object.assign({ id: '__probe' }, e);
+        const x = L.expandAll(ctx(), S.data.assets, S.data.entries.filter((y) => y.id !== f.id).concat([probe])).find((y) => y.entryId === '__probe');
+        if (x && x.over) bad = '売却数量が、売却日時点のこの口座の保有数量を超えています';
+      }
+    } else if (f.kind === 'lot') {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(f.date) || f.date > L.localToday()) return toast('購入日を正しく入力してください（未来日は不可）');
       if (a.type === 'crypto') {
         need('qty', '数量'); need('amount', '購入金額', true);
@@ -553,13 +601,13 @@
     const r = route(), app = $('#app');
     let html, tab = 'home';
     if (r.name === 'h') html = viewHolding(r.arg);
-    else if (r.name === 'add' || r.name === 'edit') {
+    else if (r.name === 'add' || r.name === 'edit' || r.name === 'sell') {
       tab = 'add';
       const key = r.name + '/' + (r.arg || '');
       if (!S.form || formKey !== key) {
         const entry = r.name === 'edit' ? S.data.entries.find((e) => e.id === r.arg) : null;
         if (r.name === 'edit' && !entry) { location.hash = '#/'; return; }
-        S.form = newForm(r.name === 'add' ? r.arg : null, entry); formKey = key;
+        S.form = newForm(r.name === 'edit' ? null : r.arg, entry, r.name === 'sell'); formKey = key;
       }
       html = viewForm();
     } else if (r.name === 'settings') { html = viewSettings(); tab = 'settings'; }
@@ -599,6 +647,7 @@
           if (!S.data.entries.some((x) => x.symbol === e.symbol)) location.hash = '#/'; else render();
         }
       } else if (d.act === 'refresh') { S.busy || (render(), refresh(true)); }
+      else if (d.act === 'sell-all') { readForm(); S.form.qty = String(+(+d.val).toFixed(8)); render(); }
       else if (d.act === 'unpick') { readForm(); S.form.asset = null; render(); }
       else if (d.act === 'save') saveForm();
       else if (d.act === 'save-settings') await saveSettings();

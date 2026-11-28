@@ -129,15 +129,67 @@
     return out;
   }
 
+  /** 売却 → イベント1件（受取額のみ確定。取得原価の減額は applySells で付与） */
+  function expandSell(ctx, asset, s) {
+    const base = { entryId: s.id, src: 'sell', sell: true, symbol: s.symbol, account: s.account, date: s.date, execDate: s.date, qty: s.qty };
+    const fxd = closeOn(ctx.fx, s.date);
+    if (s.amount != null) { // 円建ての受取金額を直接入力
+      const f0 = s.fx != null ? s.fx : fxd;
+      return [Object.assign(base, { proceeds: s.amount, proceedsUsd: f0 == null ? null : s.amount / f0, est: false })];
+    }
+    let est = false, price = s.price;
+    if (price == null) { price = closeOn(rowsOf(ctx, s.symbol), s.date); est = true; }
+    if (price == null) return [Object.assign(base, { unresolved: true, reason: '売却日の価格がない' })];
+    const unit = price / PER[asset.type];
+    let fx = 1;
+    if (isUsd(asset)) {
+      fx = s.fx;
+      if (fx == null) { fx = fxd; est = true; }
+      if (fx == null) return [Object.assign(base, { unresolved: true, reason: '売却日の為替がない' })];
+    }
+    const proceeds = s.qty * unit * fx;
+    return [Object.assign(base, { proceeds, proceedsUsd: isUsd(asset) ? s.qty * unit : (fxd == null ? null : proceeds / fxd), est })];
+  }
+
+  /**
+   * 売却イベントに、取得原価の減額（銘柄×口座ごとの平均取得単価）と実現損益を付与する。
+   * 売却イベントは units・cost が負になり、集計・推移はそのまま加算すればよい。
+   */
+  function applySells(ev) {
+    if (!ev.some((e) => e.sell)) return ev;
+    const order = live(ev).map((e, i) => [e, i]).sort((x, y) =>
+      (x[0].execDate < y[0].execDate ? -1 : x[0].execDate > y[0].execDate ? 1 : (x[0].sell ? 1 : 0) - (y[0].sell ? 1 : 0) || x[1] - y[1]));
+    const pools = {};
+    for (const [e] of order) {
+      const k = e.symbol + '|' + e.account;
+      const p = pools[k] = pools[k] || { units: 0, cost: 0, costUsd: 0, costNative: 0, usdBad: false };
+      if (!e.sell) {
+        p.units += e.units; p.cost += e.cost; p.costNative += e.costNative || 0;
+        if (e.costUsd == null) p.usdBad = true; else p.costUsd += e.costUsd;
+        continue;
+      }
+      if (e.qty > p.units * (1 + 1e-6)) { e.unresolved = true; e.reason = '売却数量が保有数量を超えている'; e.over = true; continue; }
+      const r = e.qty >= p.units * (1 - 1e-6) ? 1 : e.qty / p.units;
+      e.units = -e.qty;
+      e.cost = -p.cost * r; e.costNative = -p.costNative * r;
+      e.costUsd = p.usdBad ? null : -p.costUsd * r;
+      e.realized = e.proceeds + e.cost;
+      e.realizedUsd = e.proceedsUsd == null || e.costUsd == null ? null : e.proceedsUsd + e.costUsd;
+      p.units += e.units; p.cost += e.cost; p.costNative += e.costNative; p.costUsd += e.costUsd || 0;
+      if (r === 1) { p.units = 0; p.cost = 0; p.costNative = 0; p.costUsd = 0; p.usdBad = false; }
+    }
+    return ev;
+  }
+
   /** 全エントリ → イベント列 */
   function expandAll(ctx, assets, entries) {
     let ev = [];
     for (const e of entries) {
       const a = assets[e.symbol];
       if (!a) continue;
-      ev = ev.concat(e.kind === 'plan' ? expandPlan(ctx, a, e) : expandLot(ctx, a, e));
+      ev = ev.concat(e.kind === 'plan' ? expandPlan(ctx, a, e) : e.kind === 'sell' ? expandSell(ctx, a, e) : expandLot(ctx, a, e));
     }
-    return ev;
+    return applySells(ev);
   }
   const live = (ev) => ev.filter((e) => !e.pending && !e.unresolved);
 
@@ -162,14 +214,23 @@
   function summarize(ctx, assets, events, minIrrDays) {
     const ev = live(events);
     const bySym = {};
-    let cost = 0, value = 0, prev = 0, missing = false, first = null;
+    let cost = 0, value = 0, prev = 0, missing = false, first = null, invested = 0, realized = 0, proceeds = 0, sells = 0;
+    const flows = [];
     for (const e of ev) {
       (bySym[e.symbol] = bySym[e.symbol] || { units: 0 }).units += e.units;
       const c = costIn(ctx, e);
       if (c == null) missing = true; else cost += c;
+      if (e.sell) { // 売却：受取額を入金として扱う
+        const pr = ctx.cur === 'USD' ? e.proceedsUsd : e.proceeds;
+        if (pr == null) missing = true;
+        else { proceeds += pr; if (c != null) realized += pr + c; flows.push({ date: e.date, amount: pr }); }
+        sells++;
+      } else { invested += c || 0; flows.push({ date: e.date, amount: -(c || 0) }); }
       if (!first || e.date < first) first = e.date;
     }
+    if (Math.abs(cost) < 1e-6) cost = 0;
     for (const sym in bySym) {
+      if (Math.abs(bySym[sym].units) < 1e-9) { bySym[sym].units = 0; continue; } // 全量売却済み
       const a = assets[sym], rows = rowsOf(ctx, sym);
       const u = unitIn(ctx, a, ctx.today);
       if (u == null) { missing = true; continue; }
@@ -178,15 +239,14 @@
       const pu = i > 0 ? unitIn(ctx, a, rows[i - 1][0]) : null;
       prev += bySym[sym].units * (pu == null ? u : pu);
     }
-    const flows = ev.map((e) => ({ date: e.date, amount: -(costIn(ctx, e) || 0) }));
     flows.push({ date: ctx.today, amount: value });
     const days = first ? (toMs(ctx.today) - toMs(first)) / DAY : 0;
-    const irr = !missing && cost > 0 && days >= (minIrrDays == null ? 30 : minIrrDays) ? xirr(flows) : null;
+    const irr = !missing && invested > 0 && days >= (minIrrDays == null ? 30 : minIrrDays) ? xirr(flows) : null;
     const units = Object.keys(bySym).length === 1 ? bySym[Object.keys(bySym)[0]].units : null;
     return {
       units, cost, value, pnl: value - cost, pct: cost > 0 ? (value - cost) / cost : null, irr,
       dayChange: value - prev, dayPct: prev > 0 ? (value - prev) / prev : null,
-      first, days, missing, costNative: ev.reduce((s, e) => s + (e.costNative || 0), 0),
+      invested, realized, proceeds, sells, first, days, missing, costNative: ev.reduce((s, e) => s + (e.costNative || 0), 0),
       pendingCost: events.filter((e) => e.pending).reduce((s, e) => s + e.cost, 0), // 常に円
       unresolved: events.filter((e) => e.unresolved).length,
     };
@@ -213,5 +273,5 @@
   }
 
   return { PER, isUsd, unitIn, toMs, fromMs, addDays, localToday, idxOnOrBefore, idxOnOrAfter, closeOn, unitJpy,
-    expandLot, expandPlan, expandAll, live, xirr, summarize, series };
+    expandLot, expandPlan, expandSell, applySells, expandAll, live, xirr, summarize, series };
 });
